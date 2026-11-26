@@ -8,6 +8,28 @@ import android.widget.*;
 import android.net.Uri;
 import android.content.Intent;
 
+import java.io.*;
+import java.util.UUID;
+import javax.crypto.Cipher;
+import javax.crypto.CipherOutputStream;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import java.security.KeyStore;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+
+
+import java.io.*;
+import java.util.UUID;
+import javax.crypto.Cipher;
+import javax.crypto.CipherOutputStream;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import java.security.KeyStore;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+
+
 public class MainActivity extends Activity {
     long holdStart = 0;
     Handler handler = new Handler();
@@ -123,11 +145,82 @@ public class MainActivity extends Activity {
         startActivityForResult(intent, video ? PICK_VIDEOS : PICK_PHOTOS);
     }
 
+
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-            showMessage("File selected successfully. Secure storage is not implemented yet.");
+
+        if ((requestCode == PICK_PHOTOS || requestCode == PICK_VIDEOS)
+                && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            try {
+                boolean video = requestCode == PICK_VIDEOS;
+                encryptSelectedFile(data.getData(), video);
+                showMessage("Encrypted successfully! File saved in private vault.");
+            } catch (Exception e) {
+                showMessage("Encryption failed: " + e.getMessage());
+            }
+        }
+    }
+
+    SecretKey getVaultKey() throws Exception {
+        String alias = "X_VAULT_AES_KEY";
+        KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+        ks.load(null);
+
+        if (ks.containsAlias(alias)) {
+            return ((KeyStore.SecretKeyEntry) ks.getEntry(alias, null)).getSecretKey();
+        }
+
+        KeyGenerator generator = KeyGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+
+        generator.init(new KeyGenParameterSpec.Builder(
+            alias,
+            KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+            .setKeySize(256)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setRandomizedEncryptionRequired(true)
+            .build());
+
+        return generator.generateKey();
+    }
+
+    void encryptSelectedFile(Uri uri, boolean video) throws Exception {
+        File folder = new File(
+            getFilesDir(), video ? "vault/videos" : "vault/photos");
+
+        if (!folder.exists() && !folder.mkdirs()) {
+            throw new Exception("Cannot create vault folder");
+        }
+
+        File encryptedFile = new File(folder, UUID.randomUUID().toString() + ".xv");
+
+        try {
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, getVaultKey());
+            byte[] iv = cipher.getIV();
+
+            try (InputStream input = getContentResolver().openInputStream(uri)) {
+                if (input == null) throw new Exception("Cannot read selected file");
+
+                try (FileOutputStream raw = new FileOutputStream(encryptedFile)) {
+                    raw.write(iv);
+
+                    try (CipherOutputStream output = new CipherOutputStream(raw, cipher)) {
+                        byte[] buffer = new byte[8192];
+                        int count;
+
+                        while ((count = input.read(buffer)) != -1) {
+                            output.write(buffer, 0, count);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            encryptedFile.delete();
+            throw e;
         }
     }
 
