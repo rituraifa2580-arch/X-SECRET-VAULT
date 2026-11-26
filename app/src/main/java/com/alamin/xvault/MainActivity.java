@@ -30,7 +30,7 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 
 
-import android.media.MediaController;
+import android.widget.MediaController;
 import javax.crypto.CipherInputStream;
 import javax.crypto.spec.GCMParameterSpec;
 import android.widget.VideoView;
