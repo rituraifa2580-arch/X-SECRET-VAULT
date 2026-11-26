@@ -30,6 +30,10 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 
 
+import android.media.MediaController;
+import javax.crypto.CipherInputStream;
+import javax.crypto.spec.GCMParameterSpec;
+import android.widget.VideoView;
 public class MainActivity extends Activity {
     long holdStart = 0;
     Handler handler = new Handler();
@@ -113,7 +117,7 @@ public class MainActivity extends Activity {
         TextView sub = makeText("SECRET GALLERY VAULT", 13);
         page.addView(sub);
 
-        addButton(page, "▣     PRIVATE PHOTOS", () -> pickMedia(false));
+        addButton(page, "▣     PRIVATE PHOTOS", () -> showMediaList(false));
         addButton(page, "▶     PRIVATE VIDEOS", () -> videoPin());
         addButton(page, "◆     SECURE FILES", () -> showMessage("Secure Files coming soon"));
         addButton(page, "⚙     SETTINGS", () -> showMessage("Settings coming soon"));
@@ -139,7 +143,7 @@ public class MainActivity extends Activity {
     }
 
     void pickMedia(boolean video) {
-        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.setType(video ? "video/*" : "image/*");
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         startActivityForResult(intent, video ? PICK_VIDEOS : PICK_PHOTOS);
@@ -156,6 +160,7 @@ public class MainActivity extends Activity {
             try {
                 boolean video = requestCode == PICK_VIDEOS;
                 encryptSelectedFile(data.getData(), video);
+                showMediaList(video);
                 showMessage("Encrypted successfully! File saved in private vault.");
             } catch (Exception e) {
                 showMessage("Encryption failed: " + e.getMessage());
@@ -232,6 +237,158 @@ public class MainActivity extends Activity {
             .show();
     }
 
+
+
+    void showMediaList(boolean video) {
+        File folder = new File(getFilesDir(),
+                video ? "vault/videos" : "vault/photos");
+        if (!folder.exists()) folder.mkdirs();
+
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(20, 30, 20, 20);
+        page.setBackgroundColor(Color.rgb(8, 8, 8));
+
+        TextView title = makeText(
+                video ? "PRIVATE VIDEOS" : "PRIVATE PHOTOS", 22);
+        page.addView(title, new LinearLayout.LayoutParams(-1, 65));
+
+        addButton(page, video ? "+ ADD VIDEO" : "+ ADD PHOTO",
+                () -> pickMedia(video));
+
+        File[] files = folder.listFiles();
+        int count = 0;
+
+        if (files != null) {
+            java.util.Arrays.sort(files,
+                    (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+
+            for (File file : files) {
+                if (!file.isFile() || !file.getName().endsWith(".xv")) continue;
+                count++;
+
+                TextView item = makeText(
+                        (video ? "▶  " : "▣  ") +
+                        file.getName().substring(0, 8) + "  •  ENCRYPTED", 14);
+                item.setBackgroundColor(Color.rgb(25, 25, 25));
+
+                LinearLayout.LayoutParams lp =
+                        new LinearLayout.LayoutParams(-1, 65);
+                lp.setMargins(0, 10, 0, 0);
+                page.addView(item, lp);
+
+                item.setOnClickListener(v -> openEncryptedMedia(file, video));
+                item.setOnLongClickListener(v -> {
+                    new AlertDialog.Builder(this)
+                            .setTitle("Delete private media?")
+                            .setMessage("This file will be permanently deleted.")
+                            .setNegativeButton("CANCEL", null)
+                            .setPositiveButton("DELETE", (d, w) -> {
+                                if (file.delete()) showMediaList(video);
+                                else showMessage("Delete failed.");
+                            }).show();
+                    return true;
+                });
+            }
+        }
+
+        if (count == 0) {
+            page.addView(makeText("No private media yet", 15),
+                    new LinearLayout.LayoutParams(-1, 100));
+        }
+
+        addButton(page, "← BACK TO VAULT", () -> showVault());
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(page);
+        setContentView(scroll);
+    }
+
+
+    File decryptToCache(File encrypted) throws Exception {
+        File preview = File.createTempFile("xvault_", ".tmp", getCacheDir());
+
+        try (InputStream raw = new FileInputStream(encrypted)) {
+            byte[] iv = new byte[12];
+            int offset = 0;
+            while (offset < iv.length) {
+                int n = raw.read(iv, offset, iv.length - offset);
+                if (n < 0) throw new Exception("Invalid encrypted file");
+                offset += n;
+            }
+
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, getVaultKey(),
+                    new GCMParameterSpec(128, iv));
+
+            try (CipherInputStream input = new CipherInputStream(raw, cipher);
+                 FileOutputStream output = new FileOutputStream(preview)) {
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, count);
+                }
+            }
+        } catch (Exception e) {
+            preview.delete();
+            throw e;
+        }
+        return preview;
+    }
+
+
+    void openEncryptedMedia(File encrypted, boolean video) {
+        File preview = null;
+        try {
+            preview = decryptToCache(encrypted);
+
+            final File temp = preview;
+            LinearLayout page = new LinearLayout(this);
+            page.setOrientation(LinearLayout.VERTICAL);
+            page.setBackgroundColor(Color.BLACK);
+            page.setPadding(10, 20, 10, 10);
+
+            addButton(page, "← BACK TO GALLERY", () -> {
+                temp.delete();
+                showMediaList(video);
+            });
+
+            if (video) {
+                VideoView player = new VideoView(this);
+                page.addView(player, new LinearLayout.LayoutParams(-1, 0, 1));
+
+                MediaController controls = new MediaController(this);
+                controls.setAnchorView(player);
+                player.setMediaController(controls);
+                player.setVideoPath(temp.getAbsolutePath());
+                player.setOnErrorListener((mp, what, extra) -> {
+                    showMessage("This video format could not be played.");
+                    return true;
+                });
+
+                setContentView(page);
+                player.start();
+            } else {
+                ImageView image = new ImageView(this);
+                image.setAdjustViewBounds(true);
+                image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+
+                Bitmap bitmap = BitmapFactory.decodeFile(temp.getAbsolutePath());
+                if (bitmap == null) {
+                    temp.delete();
+                    showMessage("Cannot display this image.");
+                    return;
+                }
+
+                image.setImageBitmap(bitmap);
+                page.addView(image, new LinearLayout.LayoutParams(-1, 0, 1));
+                setContentView(page);
+            }
+        } catch (Exception e) {
+            if (preview != null) preview.delete();
+            showMessage("Could not open media. File may be damaged or key unavailable.");
+        }
+    }
 
     String hashPin(String value, byte[] salt, String algorithm) throws Exception {
         javax.crypto.spec.PBEKeySpec spec =
@@ -311,6 +468,7 @@ public class MainActivity extends Activity {
                     if (create) {
                         saveVideoPin(value);
                         showMessage("Video PIN created.");
+                        pickMedia(true);
                     } else if (!legacy.isEmpty()) {
                         if (legacy.equals(value)) {
                             saveVideoPin(value);
